@@ -8,6 +8,8 @@ from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from google.adk.tools.tool_context import ToolContext
 from google.genai import types
+from a2a.client import A2AClient
+import re
 
 
 # Local cache of created request_ids for demo purposes.
@@ -167,13 +169,58 @@ class ReimbursementAgent:
         )
 
     async def stream(self, query, session_id) -> AsyncIterable[dict[str, Any]]:
+        # 通貨換算が必要かチェック (例: "20 EUR", "1000 JPY" など)
+        # re.search() は、文字列から正規表現にマッチする部分を探す
+        match = re.search(r'(\d+\.?\d*)\s+(EUR|JPY)', query, re.IGNORECASE)
+        
+        modified_query = query # 元のクエリを保持
+
+        if match:
+            amount_str, currency = match.groups()
+            amount = float(amount_str)
+            
+            # UIに「変換中」であることを伝えるメッセージを先出しする
+            yield {
+                'is_task_complete': False,
+                'updates': f'{currency.upper()}をUSDに変換しています...',
+            }
+
+            try:
+                # 通貨換算エージェントを呼び出すクライアントを作成
+                a2a_client = A2AClient(remote_agent_url='http://localhost:10003') # ポート10003を指定
+                task = await a2a_client.create_task(
+                    title="Convert currency to USD",
+                    skill="convert",
+                    params={
+                        "amount": amount,
+                        "source_currency": currency.upper(),
+                        "target_currency": "USD"
+                    }
+                )
+                
+                # 結果を待つ
+                result = await task.get_final_result() # 例: "21.40 USD"
+                
+                # 元のクエリを、換算後のクエリに書き換える
+                modified_query = query.replace(match.group(0), result)
+                print(f"クエリを書き換えました: '{query}' -> '{modified_query}'")
+
+            except Exception as e:
+                print(f"通貨換算エージェントの呼び出し中にエラー: {e}")
+                yield {
+                    'is_task_complete': True,
+                    'content': f"エラー: 通貨換算エージェントの呼び出しに失敗しました。詳細: {e}"
+                }
+                return # エラーが起きたらここで処理を中断
+
+
         session = await self._runner.session_service.get_session(
             app_name=self._agent.name,
             user_id=self._user_id,
             session_id=session_id,
         )
         content = types.Content(
-            role='user', parts=[types.Part.from_text(text=query)]
+            role='user', parts=[types.Part.from_text(text=modified_query)]
         )
         if session is None:
             session = await self._runner.session_service.create_session(

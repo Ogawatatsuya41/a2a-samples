@@ -35,6 +35,7 @@ members = [
     "agents/ag2",
     "agents/extended_agent_card_adk",
     "agents/veo_video_gen",
+    "agents/currency_converter_agent"
 ]
 
 [tool.uv.sources]
